@@ -1,0 +1,737 @@
+:root {
+  --bg-deep: #070d18;
+  --bg-mid: #0d1a2c;
+  --bg-glow: #16304d;
+  --ice-core: #f4f9ff;
+  --ice-main: #eef6ff;
+  --ice-branch: #dcecff;
+  /* 結晶の線の色（画面・履歴・背景の雪・書き出す SVG で共通） */
+  --ice-line: #eef6ff;
+  --ice-plate: #cfe4ff;
+  --text: #c9d8ea;
+  --text-muted: #6f8299;
+  /* 履歴パネルなど、暗い面の上に置く補助テキスト（--text-muted より明るい） */
+  --text-ui: #a6b8cc;
+  --line: rgba(201, 216, 234, 0.22);
+  --line-strong: rgba(201, 216, 234, 0.55);
+  /* 履歴ボタン・パネルなど、背景から浮かせたい UI の枠線 */
+  --line-ui: rgba(201, 216, 234, 0.4);
+  --font-sans: "Helvetica Neue", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /*
+   * 読み込み時の演出（初回表示のみ。タイミングの調整はここだけで行う）
+   *   0ms    背景の光とダイヤモンドダストが同時に現れ始める（光が先に満ち、粒は遅れて見えてくる）
+   *   text   タイトル・リード文・ボタンをまとめてフェード
+   *   line   入力欄の下線を中央から左右に引く
+   *   gap    下線を引き終えてから打ち込みを始めるまでの間（app.ts が読む）
+   *   twinkle ダストが見えてから、またたく粒を出す
+   */
+  --intro-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --intro-light: 800ms;
+  --intro-dust: 1400ms;
+  --intro-text-delay: 150ms;
+  --intro-text: 500ms;
+  --intro-line-delay: 400ms;
+  --intro-line: 500ms;
+  --intro-gap: 150ms;
+  --intro-twinkle-delay: 1000ms;
+  --intro-twinkle: 800ms;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-weight: 300;
+  -webkit-font-smoothing: antialiased;
+  background-color: var(--bg-deep);
+}
+
+/*
+ * ambient：夜空のごく弱いグラデーション（::before）と、中央の光（::after）。
+ * 光だけを読み込み時に灯すため、画面に固定した別の層にする（background-attachment: fixed より軽い）。
+ * ダイヤモンドダストの光の当たり方と位置がずれないよう、同じく 100lvh の高さに固定する
+ */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100lvh;
+  pointer-events: none;
+}
+
+body::before {
+  background: linear-gradient(180deg, var(--bg-mid) 0%, var(--bg-deep) 100%);
+}
+
+body::after {
+  background: radial-gradient(ellipse 70% 55% at 50% 58%, var(--bg-glow) 0%, transparent 70%);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* --- 背景のダイヤモンドダスト ---------------------------------------------- */
+
+.diamond-dust {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 100%;
+  /* スマホのアドレスバーの伸び縮みで描き直さないよう、最大の高さに固定する */
+  height: 100lvh;
+  overflow: hidden;
+  pointer-events: none;
+  /*
+   * 中の層（Canvas）が動くので、ここにマスクをかけると毎フレーム合成がやり直されて重くなる。
+   * 光の当たり方は diamond-dust.ts で粒ごとの明るさとして描き込んでいる
+   */
+}
+
+/* 漂う層：上下のはみ出し（top / height）と動きは diamond-dust.ts で設定する */
+.diamond-dust-layer {
+  position: absolute;
+  left: 0;
+  display: block;
+  width: 100%;
+}
+
+/* またたく粒：静止した土台の上に、少数だけ重ねる */
+.diamond-dust-twinkle {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100lvh;
+  overflow: hidden;
+  pointer-events: none;
+  /*
+   * ここにマスクをかけると、粒が明滅するたびにマスクの合成がやり直されて重くなる。
+   * 端ほど薄くする処理は、粒ごとの明るさとして diamond-dust.ts で計算している
+   */
+}
+
+.twinkle-dot {
+  position: absolute;
+  border-radius: 50%;
+  opacity: 0;
+  scale: 1;
+  translate: -50% -50%;
+}
+
+/* --- 背景の雪 -------------------------------------------------------------- */
+
+.snowfall {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.snowfall-run {
+  position: absolute;
+  inset: 0;
+}
+
+.snowflake-bit {
+  position: absolute;
+  /* 画面の上端のすぐ外から降り始める */
+  top: -3rem;
+  aspect-ratio: 1;
+  translate: 0 0;
+}
+
+.snowflake-sway {
+  width: 100%;
+  height: 100%;
+  translate: 0 0;
+}
+
+.snowflake-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  rotate: 0deg;
+  user-select: none;
+}
+
+/* --- レイアウト ------------------------------------------------------------ */
+
+.page {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100svh;
+  padding: clamp(2.5rem, 7vh, 5rem) 1rem clamp(2rem, 6vh, 4rem);
+  /* 回転中の .stage の角がはみ出しても、スクロールバーが出たり消えたりしないようにする */
+  overflow: clip;
+  text-align: center;
+}
+
+.title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 400;
+  letter-spacing: 0.42em;
+  text-transform: uppercase;
+  /* letter-spacing の末尾分を打ち消して中央を揃える */
+  margin-right: -0.42em;
+  color: var(--text-muted);
+}
+
+/* PC では左上に固定し、右上の履歴ボタンと高さを揃える */
+@media (min-width: 64rem) {
+  .title {
+    position: fixed;
+    top: 1rem;
+    left: 1.5rem;
+    margin-right: 0;
+    line-height: 2.5rem;
+  }
+}
+
+.lead {
+  margin: 1.6rem 0 0;
+  font-size: 0.92rem;
+  line-height: 1.9;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+
+/* 狭い画面でも 1 行が収まるよう、文字を少し小さくする */
+@media (max-width: 30rem) {
+  .lead {
+    font-size: 0.84rem;
+  }
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 22rem);
+  margin-top: clamp(1.75rem, 5vh, 3rem);
+}
+
+/* 入力欄の下線は、読み込み時に中央から引けるよう ::after で描く */
+.seed-field {
+  position: relative;
+  width: 100%;
+}
+
+.seed-field::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1px;
+  background-color: var(--line);
+  pointer-events: none;
+  transition: background-color 0.3s ease;
+}
+
+.seed-field:has(.seed-input:hover)::after {
+  background-color: var(--line-strong);
+}
+
+/* フォーカス中・初期表示や履歴からの打ち込み演出中 */
+.seed-field:has(.seed-input:focus-visible)::after,
+.seed-field:has(.seed-input[data-typing])::after {
+  background-color: var(--ice-branch);
+}
+
+.seed-input {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.25rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
+.seed-input:focus-visible {
+  outline: none;
+}
+
+/* --- 雪の結晶 -------------------------------------------------------------- */
+
+.stage {
+  /* 画面の高さが足りないときは、結晶全体が最初の画面に収まるよう小さくする */
+  width: min(84vmin, 34rem, calc(100svh - 18rem));
+  aspect-ratio: 1;
+  margin-block: clamp(1.25rem, 4vh, 2.5rem) 0.5rem;
+  /* アニメーションされる個別 transform の基準値（identity） */
+  rotate: 0deg;
+  scale: 1;
+  transform-origin: 50% 50%;
+}
+
+.stage[data-state="pending"] {
+  opacity: 0;
+}
+
+.flake {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.core-glow {
+  transform-box: fill-box;
+  transform-origin: center;
+  scale: 1;
+}
+
+/* 結晶の線はすべて同じ色にし、線の濃淡を均一にする（太さの違いだけで表情を出す） */
+.stroke {
+  fill: none;
+  stroke: var(--ice-line);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* プレートの塗り：線の奥に敷く（穴のように見えないよう、ある程度の濃さを持たせる） */
+.fill {
+  fill: var(--ice-plate);
+  fill-opacity: 0.2;
+}
+
+/* --- ボタン ---------------------------------------------------------------- */
+
+/* Generate と、その右に並べるダウンロード */
+.actions {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  margin-top: 1.1rem;
+}
+
+.generate {
+  /* 2 つのラベルを重ね、長いほうの幅に揃えて切り替え時にボタンの幅が変わらないようにする */
+  display: inline-grid;
+  place-items: center;
+  padding: 0.6rem 2rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.32em;
+  text-indent: 0.32em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    border-color 0.3s ease,
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+.generate-idle,
+.generate-busy {
+  grid-area: 1 / 1;
+}
+
+/* 生成アニメーション中：押せなくし、ラベルを Growing… にする */
+.generate-busy,
+.generate:disabled .generate-idle {
+  visibility: hidden;
+}
+
+.generate:disabled .generate-busy {
+  visibility: visible;
+}
+
+.generate:disabled {
+  color: var(--text-ui);
+  cursor: default;
+}
+
+.generate:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  background-color: rgba(220, 236, 255, 0.04);
+  color: var(--ice-main);
+}
+
+.generate:active:not(:disabled) {
+  background-color: rgba(220, 236, 255, 0.08);
+}
+
+.generate:focus-visible {
+  outline: 1px solid var(--ice-branch);
+  outline-offset: 3px;
+}
+
+/* --- ダウンロード ------------------------------------------------------------ */
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 0.45rem;
+  /* 隠している間は幅 0 に畳むので、Generate との間隔も自分の margin で持つ */
+  max-width: 8rem;
+  margin-left: 0.5rem;
+  /* Generate と同じ見た目のピル型にする */
+  padding: 0.6rem 1.25rem;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.32em;
+  text-indent: 0.32em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    color 0.3s ease,
+    border-color 0.3s ease,
+    background-color 0.3s ease,
+    opacity 0.4s ease,
+    visibility 0.4s,
+    max-width 0.4s ease,
+    margin-left 0.4s ease,
+    padding-inline 0.4s ease,
+    border-width 0.4s ease;
+}
+
+.download svg {
+  flex-shrink: 0;
+}
+
+.download svg,
+.history-download svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.download:hover:not(:disabled) {
+  color: var(--ice-core);
+  border-color: var(--line-strong);
+  background-color: rgba(220, 236, 255, 0.06);
+}
+
+/* 生成アニメーション中は幅 0 に畳んで隠し、その間は Generate だけが中央に来るようにする */
+.download:disabled {
+  max-width: 0;
+  margin-left: 0;
+  padding-inline: 0;
+  border-width: 0;
+  opacity: 0;
+  visibility: hidden;
+}
+
+.download:focus-visible {
+  outline: 1px solid var(--ice-branch);
+  outline-offset: 3px;
+}
+
+/* --- 右上のアイコンボタン ------------------------------------------------ */
+
+.corner-button {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid var(--line-ui);
+  border-radius: 50%;
+  background: rgba(10, 20, 36, 0.55);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    color 0.3s ease,
+    border-color 0.3s ease,
+    background-color 0.3s ease;
+}
+
+.corner-button svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.corner-button:hover {
+  color: var(--ice-core);
+  border-color: var(--line-strong);
+  background-color: rgba(20, 38, 62, 0.75);
+}
+
+.corner-button:focus-visible {
+  outline: 1px solid var(--ice-branch);
+  outline-offset: 2px;
+}
+
+/* --- 生成履歴 -------------------------------------------------------------- */
+
+.history-panel {
+  /* popover は最前面（top layer）に出る。位置はボタンの下に固定する */
+  position: fixed;
+  inset: 3.75rem 1rem auto auto;
+  width: min(22rem, calc(100vw - 2rem));
+  max-height: calc(100svh - 5rem);
+  margin: 0;
+  padding: 1.1rem 1rem 0.9rem;
+  overflow-y: auto;
+  border: 1px solid var(--line-ui);
+  border-radius: 0.75rem;
+  background: rgba(10, 20, 36, 0.86);
+  backdrop-filter: blur(10px);
+  color: var(--text);
+  box-shadow: 0 1.5rem 3rem rgba(0, 0, 0, 0.35);
+  /* 開閉を静かにフェードさせる */
+  opacity: 0;
+  translate: 0 -0.25rem;
+  transition:
+    opacity 0.25s ease,
+    translate 0.25s ease,
+    overlay 0.25s ease allow-discrete,
+    display 0.25s ease allow-discrete;
+}
+
+.history-panel:popover-open {
+  opacity: 1;
+  translate: 0 0;
+}
+
+@starting-style {
+  .history-panel:popover-open {
+    opacity: 0;
+    translate: 0 -0.25rem;
+  }
+}
+
+.history-title {
+  margin: 0 0 0.75rem;
+  font-size: 0.74rem;
+  font-weight: 400;
+  letter-spacing: 0.3em;
+  color: var(--text-ui);
+}
+
+.history-list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.history-download {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-ui);
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.history-download:hover {
+  color: var(--ice-core);
+  border-color: var(--line-ui);
+  background-color: rgba(220, 236, 255, 0.06);
+}
+
+.history-download:focus-visible {
+  outline: 1px solid var(--ice-branch);
+  outline-offset: 1px;
+}
+
+.history-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  /* サムネイルの高さの中で、テキストと時刻を中央に寄せて並べる */
+  grid-template-rows: 1fr 1fr;
+  column-gap: 0.8rem;
+  row-gap: 0.2rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.history-item:hover {
+  background-color: rgba(220, 236, 255, 0.06);
+}
+
+.history-item:focus-visible {
+  outline: 1px solid var(--ice-branch);
+  outline-offset: -1px;
+}
+
+.history-thumb {
+  grid-row: 1 / 3;
+  width: 4.5rem;
+  height: 4.5rem;
+  overflow: visible;
+}
+
+.history-text {
+  align-self: end;
+  overflow: hidden;
+  color: var(--ice-main);
+  font-size: 0.9rem;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.history-time {
+  align-self: start;
+  font-size: 0.72rem;
+  color: var(--text-ui);
+}
+
+.history-empty,
+.history-note {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--text-ui);
+}
+
+.history-note {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-ui);
+  font-size: 0.7rem;
+}
+
+/* --- 読み込み時の演出 --------------------------------------------------------- */
+
+/* 動きを減らす設定のときは行わない（最初から表示しておく） */
+@media (prefers-reduced-motion: no-preference) {
+  body::after {
+    animation: intro-fade var(--intro-light) var(--intro-ease) backwards;
+  }
+
+  /* 光と同時に始め、粒のほうは長めにかけて、照らされて見えてくるようにする */
+  .diamond-dust {
+    animation: intro-fade var(--intro-dust) var(--intro-ease) backwards;
+  }
+
+  .diamond-dust-twinkle {
+    animation: intro-fade var(--intro-twinkle) var(--intro-ease) var(--intro-twinkle-delay) backwards;
+  }
+
+  /* 補助の要素は動かさず、まとめてフェードするだけにする */
+  .title,
+  .lead,
+  .generate,
+  .corner-button {
+    animation: intro-fade var(--intro-text) var(--intro-ease) var(--intro-text-delay) backwards;
+  }
+
+  .seed-field::after {
+    animation: intro-line var(--intro-line) var(--intro-ease) var(--intro-line-delay) backwards;
+  }
+
+  /*
+   * 打ち込みが始まるまでは、HTML に入っている初期値を見せない
+   * （JS が空にしてから打ち直すので、先に見えると一瞬で消えてしまう）
+   */
+  .seed-input {
+    animation: intro-hide-text calc(var(--intro-line-delay) + var(--intro-line) + var(--intro-gap)) step-end;
+  }
+}
+
+@keyframes intro-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes intro-line {
+  from {
+    scale: 0 1;
+  }
+}
+
+@keyframes intro-hide-text {
+  from {
+    color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .history-panel {
+    transition: none;
+  }
+}
